@@ -11,166 +11,130 @@ async function getLicense(app_id, license_key) {
   const { data } = await supabase.from('licenses').select('*').eq('app_id', app_id).eq('license_key', license_key).single();
   return data;
 }
-
-// Get custom error message or fall back to default
 function err(app, key, fallback) {
-  const msgs = app.error_messages || {};
-  return msgs[key] || fallback;
+  return (app.error_messages || {})[key] || fallback;
+}
+function getIP(req) {
+  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
 }
 
-// POST /api/client/register
+async function logLogin(app_id, username, success, fail_reason, ip, hwid) {
+  await supabase.from('login_logs').insert([{ app_id, username, ip_address: ip, success, fail_reason: fail_reason || null, hwid: hwid || null }]);
+}
+
+async function checkIPWhitelist(app, ip) {
+  if (!app.ip_whitelist_enabled) return true;
+  const { data } = await supabase.from('ip_whitelist').select('id').eq('app_id', app.id).eq('ip_address', ip).single();
+  return !!data;
+}
+
 router.post('/register', async (req, res) => {
   const { secret_key, username, password, license_key } = req.body;
+  const ip = getIP(req);
   if (!secret_key || !username || !password || !license_key)
-    return res.status(400).json({ success: false, message: 'Missing fields: secret_key, username, password, license_key required' });
-
+    return res.status(400).json({ success: false, message: 'Missing fields' });
   const app = await getApp(secret_key);
   if (!app) return res.status(401).json({ success: false, message: 'Invalid app key' });
-
+  if (!(await checkIPWhitelist(app, ip))) {
+    await sendWebhook(app, 'ip_blocked', [{ name: 'IP', value: ip }, { name: 'Action', value: 'Register attempt' }]);
+    return res.status(403).json({ success: false, message: err(app, 'err_ip_blocked', 'Access denied from your IP address') });
+  }
   const license = await getLicense(app.id, license_key);
   if (!license) return res.status(404).json({ success: false, message: err(app, 'err_license_invalid', 'License key not found') });
   if (!license.is_active) return res.status(403).json({ success: false, message: err(app, 'err_license_disabled', 'License key is disabled') });
   if (license.expires_at && new Date(license.expires_at) < new Date())
     return res.status(403).json({ success: false, message: err(app, 'err_license_expired', 'License key has expired') });
   if (license.used_slots >= license.max_users) {
-    await sendWebhook(app.discord_webhook, 'license_full', [
-      { name: 'App', value: app.name },
-      { name: 'License Key', value: license_key },
-      { name: 'Attempted Username', value: username },
-      { name: 'Slots', value: license.used_slots + '/' + license.max_users }
-    ]);
-    return res.status(403).json({ success: false, message: err(app, 'err_license_full', 'License key is full (max ' + license.max_users + ' users)') });
+    await sendWebhook(app, 'license_full', [{ name: 'App', value: app.name }, { name: 'License', value: license_key }, { name: 'Attempted by', value: username }]);
+    return res.status(403).json({ success: false, message: err(app, 'err_license_full', 'License key is full') });
   }
-
   const password_hash = await bcrypt.hash(password, 10);
-  const { data, error } = await supabase.from('app_users')
-    .insert([{ app_id: app.id, license_id: license.id, username, password_hash }])
-    .select('id, username, created_at').single();
+  const insert = { app_id: app.id, license_id: license.id, username, password_hash };
+  if (license.tier_id) insert.tier_id = license.tier_id;
+  const { data, error } = await supabase.from('app_users').insert([insert]).select('id, username, created_at').single();
   if (error) return res.status(400).json({ success: false, message: error.message });
-
   await supabase.from('licenses').update({ used_slots: license.used_slots + 1 }).eq('id', license.id);
-
-  await sendWebhook(app.discord_webhook, 'register', [
-    { name: 'App', value: app.name },
-    { name: 'Username', value: username },
-    { name: 'License Key', value: license_key }
-  ]);
-
+  await sendWebhook(app, 'register', [{ name: 'App', value: app.name }, { name: 'Username', value: username }, { name: 'IP', value: ip }]);
+  await logLogin(app.id, username, true, null, ip, null);
   res.json({ success: true, message: 'Registration successful', user: data });
 });
 
-// POST /api/client/login
 router.post('/login', async (req, res) => {
   const { secret_key, username, password, hwid } = req.body;
+  const ip = getIP(req);
   if (!secret_key || !username || !password)
     return res.status(400).json({ success: false, message: 'Missing fields' });
-
   const app = await getApp(secret_key);
   if (!app) return res.status(401).json({ success: false, message: 'Invalid app key' });
-
-  const { data: user } = await supabase.from('app_users').select('*')
-    .eq('app_id', app.id).eq('username', username).single();
-
+  if (!(await checkIPWhitelist(app, ip))) {
+    await sendWebhook(app, 'ip_blocked', [{ name: 'IP', value: ip }, { name: 'Username', value: username }]);
+    await logLogin(app.id, username, false, 'IP blocked', ip, hwid);
+    return res.status(403).json({ success: false, message: err(app, 'err_ip_blocked', 'Access denied from your IP address') });
+  }
+  const { data: user } = await supabase.from('app_users').select('*').eq('app_id', app.id).eq('username', username).single();
   if (!user) {
-    await sendWebhook(app.discord_webhook, 'login_failed', [
-      { name: 'App', value: app.name },
-      { name: 'Username', value: username },
-      { name: 'Reason', value: 'User not found' }
-    ]);
+    await sendWebhook(app, 'login_failed', [{ name: 'App', value: app.name }, { name: 'Username', value: username }, { name: 'Reason', value: 'User not found' }, { name: 'IP', value: ip }]);
+    await logLogin(app.id, username, false, 'User not found', ip, hwid);
     return res.status(401).json({ success: false, message: err(app, 'err_invalid_credentials', 'Invalid credentials') });
   }
-
   if (user.is_banned) {
-    await sendWebhook(app.discord_webhook, 'login_failed', [
-      { name: 'App', value: app.name },
-      { name: 'Username', value: username },
-      { name: 'Reason', value: 'Account banned' }
-    ]);
+    await sendWebhook(app, 'login_failed', [{ name: 'App', value: app.name }, { name: 'Username', value: username }, { name: 'Reason', value: 'Banned' }, { name: 'IP', value: ip }]);
+    await logLogin(app.id, username, false, 'Banned', ip, hwid);
     return res.status(403).json({ success: false, message: err(app, 'err_banned', 'Your account has been banned') });
   }
-
   if (user.expires_at && new Date(user.expires_at) < new Date()) {
-    await sendWebhook(app.discord_webhook, 'login_failed', [
-      { name: 'App', value: app.name },
-      { name: 'Username', value: username },
-      { name: 'Reason', value: 'Account expired' }
-    ]);
+    await logLogin(app.id, username, false, 'Expired', ip, hwid);
     return res.status(403).json({ success: false, message: err(app, 'err_expired', 'Your account has expired') });
   }
-
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) {
-    await sendWebhook(app.discord_webhook, 'login_failed', [
-      { name: 'App', value: app.name },
-      { name: 'Username', value: username },
-      { name: 'Reason', value: 'Wrong password' }
-    ]);
+    await sendWebhook(app, 'login_failed', [{ name: 'App', value: app.name }, { name: 'Username', value: username }, { name: 'Reason', value: 'Wrong password' }, { name: 'IP', value: ip }]);
+    await logLogin(app.id, username, false, 'Wrong password', ip, hwid);
     return res.status(401).json({ success: false, message: err(app, 'err_invalid_credentials', 'Invalid credentials') });
   }
-
-  // HWID check
   if (user.hwid_lock_enabled) {
-    if (!hwid) return res.status(403).json({ success: false, message: err(app, 'err_hwid_required', 'HWID required for this account') });
+    if (!hwid) return res.status(403).json({ success: false, message: err(app, 'err_hwid_required', 'HWID required') });
     const { data: hwids } = await supabase.from('user_hwids').select('*').eq('user_id', user.id);
     const existing = hwids || [];
-    const known = existing.find(h => h.hwid === hwid);
-    if (!known) {
+    if (!existing.find(h => h.hwid === hwid)) {
       if (existing.length >= user.max_hwids) {
-        await sendWebhook(app.discord_webhook, 'hwid_blocked', [
-          { name: 'App', value: app.name },
-          { name: 'Username', value: username },
-          { name: 'Blocked HWID', value: hwid },
-          { name: 'Max Devices', value: String(user.max_hwids) }
-        ]);
-        return res.status(403).json({ success: false, message: err(app, 'err_hwid_max_reached', 'Max devices reached (' + user.max_hwids + '). Contact support to reset.') });
+        await sendWebhook(app, 'hwid_blocked', [{ name: 'App', value: app.name }, { name: 'Username', value: username }, { name: 'HWID', value: hwid }, { name: 'Max', value: String(user.max_hwids) }]);
+        await logLogin(app.id, username, false, 'HWID max reached', ip, hwid);
+        return res.status(403).json({ success: false, message: err(app, 'err_hwid_max_reached', 'Max devices reached') });
       }
       await supabase.from('user_hwids').insert([{ user_id: user.id, hwid }]);
     }
   }
-
-  await sendWebhook(app.discord_webhook, 'login', [
-    { name: 'App', value: app.name },
-    { name: 'Username', value: username },
-    { name: 'HWID', value: hwid || 'Not provided' }
-  ]);
-
-  res.json({ success: true, message: 'Login successful', user: { id: user.id, username: user.username, expires_at: user.expires_at } });
+  await sendWebhook(app, 'login', [{ name: 'App', value: app.name }, { name: 'Username', value: username }, { name: 'IP', value: ip }, { name: 'HWID', value: hwid || 'N/A' }]);
+  await logLogin(app.id, username, true, null, ip, hwid);
+  res.json({ success: true, message: 'Login successful', user: { id: user.id, username: user.username, expires_at: user.expires_at, tier_id: user.tier_id } });
 });
 
-// POST /api/client/license/login
 router.post('/license/login', async (req, res) => {
   const { secret_key, license_key } = req.body;
-  if (!secret_key || !license_key)
-    return res.status(400).json({ success: false, message: 'Missing fields' });
-
+  const ip = getIP(req);
+  if (!secret_key || !license_key) return res.status(400).json({ success: false, message: 'Missing fields' });
   const app = await getApp(secret_key);
   if (!app) return res.status(401).json({ success: false, message: 'Invalid app key' });
-
+  if (!(await checkIPWhitelist(app, ip)))
+    return res.status(403).json({ success: false, message: err(app, 'err_ip_blocked', 'Access denied') });
   const license = await getLicense(app.id, license_key);
-  if (!license) return res.status(404).json({ success: false, message: err(app, 'err_license_invalid', 'License key not found') });
-  if (!license.is_active) return res.status(403).json({ success: false, message: err(app, 'err_license_disabled', 'License key is disabled') });
+  if (!license) return res.status(404).json({ success: false, message: err(app, 'err_license_invalid', 'License not found') });
+  if (!license.is_active) return res.status(403).json({ success: false, message: err(app, 'err_license_disabled', 'License disabled') });
   if (license.expires_at && new Date(license.expires_at) < new Date())
-    return res.status(403).json({ success: false, message: err(app, 'err_license_expired', 'License key has expired') });
-
-  await sendWebhook(app.discord_webhook, 'login', [
-    { name: 'App', value: app.name },
-    { name: 'Type', value: 'License key login' },
-    { name: 'License Key', value: license_key }
-  ]);
-
+    return res.status(403).json({ success: false, message: err(app, 'err_license_expired', 'License expired') });
+  await sendWebhook(app, 'login', [{ name: 'App', value: app.name }, { name: 'Type', value: 'License login' }, { name: 'IP', value: ip }]);
   res.json({ success: true, message: 'License login successful', license: { id: license.id, expires_at: license.expires_at } });
 });
 
-// POST /api/client/license/check
 router.post('/license/check', async (req, res) => {
   const { secret_key, license_key } = req.body;
-  if (!secret_key || !license_key)
-    return res.status(400).json({ success: false, message: 'Missing fields' });
+  if (!secret_key || !license_key) return res.status(400).json({ success: false, message: 'Missing fields' });
   const app = await getApp(secret_key);
   if (!app) return res.status(401).json({ success: false, message: 'Invalid app key' });
   const license = await getLicense(app.id, license_key);
   if (!license) return res.status(404).json({ success: false, message: err(app, 'err_license_invalid', 'License not found') });
-  if (!license.is_active) return res.status(403).json({ success: false, message: err(app, 'err_license_disabled', 'License is disabled') });
+  if (!license.is_active) return res.status(403).json({ success: false, message: err(app, 'err_license_disabled', 'License disabled') });
   if (license.expires_at && new Date(license.expires_at) < new Date())
     return res.status(403).json({ success: false, message: err(app, 'err_license_expired', 'License expired') });
   res.json({ success: true, message: 'License valid', license: { id: license.id, expires_at: license.expires_at, slots_used: license.used_slots, max_users: license.max_users } });
