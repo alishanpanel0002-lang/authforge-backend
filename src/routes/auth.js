@@ -2,6 +2,7 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
+const fetch = require('node-fetch');
 const supabase = require('../supabase');
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -116,3 +117,50 @@ router.get('/me', require('../middleware/auth'), async (req, res) => {
 });
 
 module.exports = router;
+
+// Google OAuth — authorization code flow
+router.post('/google-code', async (req, res) => {
+  const { code, redirect_uri } = req.body;
+  if (!code) return res.status(400).json({ error: 'Code required' });
+  try {
+    // Exchange code for tokens
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri,
+        grant_type: 'authorization_code'
+      })
+    });
+    const tokens = await tokenRes.json();
+    if (!tokens.id_token) return res.status(400).json({ error: 'Failed to get tokens from Google' });
+
+    // Verify the id_token
+    const ticket = await googleClient.verifyIdToken({ idToken: tokens.id_token, audience: process.env.GOOGLE_CLIENT_ID });
+    const payload = ticket.getPayload();
+    const { email, name, picture, sub: google_id } = payload;
+
+    let { data: dev } = await supabase.from('developers').select('*').eq('google_id', google_id).single();
+    if (!dev) {
+      let { data: existing } = await supabase.from('developers').select('*').eq('email', email).single();
+      if (existing) {
+        await supabase.from('developers').update({ google_id, avatar_url: picture }).eq('id', existing.id);
+        dev = { ...existing, google_id, avatar_url: picture };
+      } else {
+        const username = (name || email.split('@')[0]).replace(/\s+/g, '').toLowerCase() + Math.floor(Math.random() * 999);
+        const { data: newDev, error } = await supabase.from('developers')
+          .insert([{ email, username, password_hash: '', google_id, avatar_url: picture }])
+          .select('*').single();
+        if (error) return res.status(400).json({ error: error.message });
+        dev = newDev;
+      }
+    }
+    res.json({ message: 'Google login successful', token: makeToken(dev), developer: { id: dev.id, email: dev.email, username: dev.username, plan: dev.plan, avatar_url: dev.avatar_url } });
+  } catch (e) {
+    console.error('Google OAuth error:', e.message);
+    res.status(401).json({ error: 'Google authentication failed: ' + e.message });
+  }
+});
