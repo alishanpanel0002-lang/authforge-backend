@@ -45,9 +45,9 @@ router.post('/register', async (req, res) => {
 });
 
 // POST /api/client/login
-// Requires: secret_key, username, password
+// Requires: secret_key, username, password, hwid (optional unless hwid_lock_enabled)
 router.post('/login', async (req, res) => {
-  const { secret_key, username, password } = req.body;
+  const { secret_key, username, password, hwid } = req.body;
   if (!secret_key || !username || !password)
     return res.status(400).json({ success: false, message: 'Missing fields' });
 
@@ -60,8 +60,29 @@ router.post('/login', async (req, res) => {
   if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
   if (user.is_banned) return res.status(403).json({ success: false, message: 'Account is banned' });
 
+  // Check user expiry
+  if (user.expires_at && new Date(user.expires_at) < new Date())
+    return res.status(403).json({ success: false, message: 'Account has expired' });
+
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) return res.status(401).json({ success: false, message: 'Invalid credentials' });
+
+  // HWID check
+  if (user.hwid_lock_enabled) {
+    if (!hwid) return res.status(403).json({ success: false, message: 'HWID required' });
+
+    const { data: hwids } = await supabase.from('user_hwids').select('*').eq('user_id', user.id);
+    const existing = hwids || [];
+    const match = existing.find(h => h.hwid === hwid);
+
+    if (!match) {
+      // New HWID — check if under limit
+      if (existing.length >= user.max_hwids)
+        return res.status(403).json({ success: false, message: `HWID limit reached (max ${user.max_hwids} devices)` });
+      // Register new HWID
+      await supabase.from('user_hwids').insert([{ user_id: user.id, hwid }]);
+    }
+  }
 
   res.json({ success: true, message: 'Login successful', user: { id: user.id, username: user.username } });
 });
