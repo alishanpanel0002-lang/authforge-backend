@@ -26,4 +26,25 @@ router.delete('/:id', async (req, res) => {
   res.json({ message: 'App deleted' });
 });
 
+// Get app settings (webhook + error messages)
+router.get('/:id/settings', async (req, res) => {
+  const { data, error } = await supabase.from('apps')
+    .select('id, name, discord_webhook, error_messages')
+    .eq('id', req.params.id).eq('developer_id', req.developer.id).single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ settings: data });
+});
+
+// Update app settings
+router.patch('/:id/settings', async (req, res) => {
+  const { discord_webhook, error_messages } = req.body;
+  const updates = {};
+  if (discord_webhook !== undefined) updates.discord_webhook = discord_webhook;
+  if (error_messages !== undefined) updates.error_messages = error_messages;
+  const { data, error } = await supabase.from('apps')
+    .update(updates).eq('id', req.params.id).eq('developer_id', req.developer.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Settings saved', app: data });
+});
+
 module.exports = router;

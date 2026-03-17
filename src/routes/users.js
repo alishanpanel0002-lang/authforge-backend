@@ -5,7 +5,6 @@ const auth = require('../middleware/auth');
 
 router.use(auth);
 
-// Get all users for an app
 router.get('/:app_id', async (req, res) => {
   const { data, error } = await supabase.from('app_users')
     .select('id, username, email, is_banned, created_at, license_id, expires_at, hwid_lock_enabled, max_hwids')
@@ -14,17 +13,14 @@ router.get('/:app_id', async (req, res) => {
   res.json({ users: data });
 });
 
-// Owner creates user manually
 router.post('/:app_id/create', async (req, res) => {
   const { username, password, email, license_id, expires_at, hwid_lock_enabled, max_hwids } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   const password_hash = await bcrypt.hash(password, 10);
-
   if (license_id) {
     const { data: lic } = await supabase.from('licenses').select('*').eq('id', license_id).single();
     if (!lic) return res.status(404).json({ error: 'License not found' });
-    if (lic.used_slots >= lic.max_users)
-      return res.status(403).json({ error: 'License is full (' + lic.max_users + ' max users)' });
+    if (lic.used_slots >= lic.max_users) return res.status(403).json({ error: 'License is full' });
     const { data, error } = await supabase.from('app_users')
       .insert([{ app_id: req.params.app_id, username, password_hash, email: email || null, license_id,
         expires_at: expires_at || null, hwid_lock_enabled: hwid_lock_enabled || false, max_hwids: max_hwids || 1 }])
@@ -33,7 +29,6 @@ router.post('/:app_id/create', async (req, res) => {
     await supabase.from('licenses').update({ used_slots: lic.used_slots + 1 }).eq('id', license_id);
     return res.json({ message: 'User created', user: data });
   }
-
   const { data, error } = await supabase.from('app_users')
     .insert([{ app_id: req.params.app_id, username, password_hash, email: email || null,
       expires_at: expires_at || null, hwid_lock_enabled: hwid_lock_enabled || false, max_hwids: max_hwids || 1 }])
@@ -42,7 +37,6 @@ router.post('/:app_id/create', async (req, res) => {
   res.json({ message: 'User created', user: data });
 });
 
-// Update user settings (expiry, hwid lock, max hwids, ban)
 router.patch('/:id', async (req, res) => {
   const allowed = ['is_banned','expires_at','hwid_lock_enabled','max_hwids'];
   const updates = {};
@@ -52,28 +46,24 @@ router.patch('/:id', async (req, res) => {
   res.json({ message: 'User updated', user: data });
 });
 
-// Get HWIDs for a user
 router.get('/:id/hwids', async (req, res) => {
   const { data, error } = await supabase.from('user_hwids').select('*').eq('user_id', req.params.id);
   if (error) return res.status(400).json({ error: error.message });
   res.json({ hwids: data });
 });
 
-// Reset all HWIDs for a user
 router.delete('/:id/hwids', async (req, res) => {
   const { error } = await supabase.from('user_hwids').delete().eq('user_id', req.params.id);
   if (error) return res.status(400).json({ error: error.message });
   res.json({ message: 'HWIDs reset' });
 });
 
-// Delete single HWID
 router.delete('/:id/hwids/:hwid_id', async (req, res) => {
   const { error } = await supabase.from('user_hwids').delete().eq('id', req.params.hwid_id).eq('user_id', req.params.id);
   if (error) return res.status(400).json({ error: error.message });
   res.json({ message: 'HWID removed' });
 });
 
-// Delete user
 router.delete('/:id', async (req, res) => {
   const { error } = await supabase.from('app_users').delete().eq('id', req.params.id);
   if (error) return res.status(400).json({ error: error.message });
