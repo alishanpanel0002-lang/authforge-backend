@@ -3,8 +3,8 @@ const supabase = require('../supabase');
 const auth = require('../middleware/auth');
 
 const PLANS = {
-  pro: { price_id: 'price_PRO_ID', name: 'Pro', limit_apps: 10, limit_users: 10000 },
-  business: { price_id: 'price_BUSINESS_ID', name: 'Business', limit_apps: -1, limit_users: -1 }
+  pro: { price_id: 'prod_UAD91PhSQ3cV5D', name: 'Pro', limit_apps: 10, limit_users: 10000 },
+  business: { price_id: 'prod_UADATiHjPaK0ni', name: 'Business', limit_apps: -1, limit_users: -1 }
 };
 
 let stripe;
