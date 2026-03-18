@@ -2,6 +2,7 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const supabase = require('../supabase');
 const auth = require('../middleware/auth');
+const { checkUserLimit } = require('../middleware/planLimits');
 router.use(auth);
 
 router.get('/:app_id', async (req, res) => {
@@ -12,7 +13,8 @@ router.get('/:app_id', async (req, res) => {
   res.json({ users: data });
 });
 
-router.post('/:app_id/create', async (req, res) => {
+// Apply user limit check
+router.post('/:app_id/create', checkUserLimit, async (req, res) => {
   const { username, password, email, license_id, expires_at, hwid_lock_enabled, max_hwids, tier_id } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   const password_hash = await bcrypt.hash(password, 10);

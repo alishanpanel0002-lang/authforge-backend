@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const supabase = require('../supabase');
 const auth = require('../middleware/auth');
+const { checkAppLimit } = require('../middleware/planLimits');
 router.use(auth);
 
 router.get('/', async (req, res) => {
@@ -9,7 +10,8 @@ router.get('/', async (req, res) => {
   res.json({ apps: data });
 });
 
-router.post('/', async (req, res) => {
+// Apply plan limit check before creating
+router.post('/', checkAppLimit, async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'App name required' });
   const { data, error } = await supabase.from('apps').insert([{ name, developer_id: req.developer.id }]).select().single();
@@ -40,7 +42,6 @@ router.patch('/:id/settings', async (req, res) => {
   res.json({ message: 'Settings saved', app: data });
 });
 
-// IP Whitelist
 router.get('/:id/ip-whitelist', async (req, res) => {
   const { data, error } = await supabase.from('ip_whitelist').select('*').eq('app_id', req.params.id);
   if (error) return res.status(400).json({ error: error.message });

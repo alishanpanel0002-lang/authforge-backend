@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const supabase = require('../supabase');
 const auth = require('../middleware/auth');
+const { checkLicenseLimit } = require('../middleware/planLimits');
 router.use(auth);
 
 router.get('/:app_id', async (req, res) => {
@@ -10,8 +11,8 @@ router.get('/:app_id', async (req, res) => {
   res.json({ licenses: data });
 });
 
-// Single license generation
-router.post('/:app_id', async (req, res) => {
+// Single — check limit
+router.post('/:app_id', checkLicenseLimit, async (req, res) => {
   const { max_users, expires_at, tier_id, prefix } = req.body;
   let license_key = undefined;
   if (prefix) {
@@ -26,8 +27,8 @@ router.post('/:app_id', async (req, res) => {
   res.json({ message: 'License created', license: data });
 });
 
-// Bulk generation
-router.post('/:app_id/bulk', async (req, res) => {
+// Bulk — check limit
+router.post('/:app_id/bulk', checkLicenseLimit, async (req, res) => {
   const { count, max_users, expires_at, tier_id, prefix } = req.body;
   const qty = Math.min(parseInt(count) || 1, 500);
   const crypto = require('crypto');
@@ -54,7 +55,6 @@ router.patch('/:id/toggle', async (req, res) => {
   res.json({ message: 'License updated', license: data });
 });
 
-// Transfer license to another user
 router.patch('/:id/transfer', async (req, res) => {
   const { user_id } = req.body;
   const { data, error } = await supabase.from('licenses').update({ assigned_to: user_id }).eq('id', req.params.id).select().single();
