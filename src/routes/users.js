@@ -5,7 +5,22 @@ const auth = require('../middleware/auth');
 const { checkUserLimit } = require('../middleware/planLimits');
 router.use(auth);
 
+// Helper: verify that app_id belongs to the authenticated developer
+async function verifyAppOwnership(app_id, developer_id) {
+  const { data } = await supabase.from('apps').select('id').eq('id', app_id).eq('developer_id', developer_id).single();
+  return !!data;
+}
+
+// Helper: verify that a user row's app belongs to the authenticated developer
+async function verifyUserOwnership(user_id, developer_id) {
+  const { data: user } = await supabase.from('app_users').select('app_id').eq('id', user_id).single();
+  if (!user) return false;
+  return verifyAppOwnership(user.app_id, developer_id);
+}
+
 router.get('/:app_id', async (req, res) => {
+  if (!(await verifyAppOwnership(req.params.app_id, req.developer.id)))
+    return res.status(403).json({ error: 'Access denied' });
   const { data, error } = await supabase.from('app_users')
     .select('id, username, email, is_banned, created_at, license_id, expires_at, hwid_lock_enabled, max_hwids, tier_id, license_tiers(name)')
     .eq('app_id', req.params.app_id).order('created_at', { ascending: false });
@@ -15,6 +30,8 @@ router.get('/:app_id', async (req, res) => {
 
 // Apply user limit check
 router.post('/:app_id/create', checkUserLimit, async (req, res) => {
+  if (!(await verifyAppOwnership(req.params.app_id, req.developer.id)))
+    return res.status(403).json({ error: 'Access denied' });
   const { username, password, email, license_id, expires_at, hwid_lock_enabled, max_hwids, tier_id } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   const password_hash = await bcrypt.hash(password, 10);
@@ -37,6 +54,8 @@ router.post('/:app_id/create', checkUserLimit, async (req, res) => {
 });
 
 router.patch('/:id', async (req, res) => {
+  if (!(await verifyUserOwnership(req.params.id, req.developer.id)))
+    return res.status(403).json({ error: 'Access denied' });
   const allowed = ['is_banned','expires_at','hwid_lock_enabled','max_hwids','tier_id'];
   const updates = {};
   allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
@@ -46,22 +65,30 @@ router.patch('/:id', async (req, res) => {
 });
 
 router.get('/:id/hwids', async (req, res) => {
+  if (!(await verifyUserOwnership(req.params.id, req.developer.id)))
+    return res.status(403).json({ error: 'Access denied' });
   const { data, error } = await supabase.from('user_hwids').select('*').eq('user_id', req.params.id);
   if (error) return res.status(400).json({ error: error.message });
   res.json({ hwids: data });
 });
 
 router.delete('/:id/hwids', async (req, res) => {
+  if (!(await verifyUserOwnership(req.params.id, req.developer.id)))
+    return res.status(403).json({ error: 'Access denied' });
   await supabase.from('user_hwids').delete().eq('user_id', req.params.id);
   res.json({ message: 'HWIDs reset' });
 });
 
 router.delete('/:id/hwids/:hwid_id', async (req, res) => {
+  if (!(await verifyUserOwnership(req.params.id, req.developer.id)))
+    return res.status(403).json({ error: 'Access denied' });
   await supabase.from('user_hwids').delete().eq('id', req.params.hwid_id).eq('user_id', req.params.id);
   res.json({ message: 'HWID removed' });
 });
 
 router.delete('/:id', async (req, res) => {
+  if (!(await verifyUserOwnership(req.params.id, req.developer.id)))
+    return res.status(403).json({ error: 'Access denied' });
   await supabase.from('app_users').delete().eq('id', req.params.id);
   res.json({ message: 'User deleted' });
 });

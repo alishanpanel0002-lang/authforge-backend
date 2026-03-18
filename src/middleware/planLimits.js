@@ -6,6 +6,14 @@ const LIMITS = {
   business: { apps: -1, users: -1,    licenses: -1  }
 };
 
+// Return effective plan, falling back to starter if subscription has lapsed
+function getEffectivePlan(dev) {
+  if (dev.plan && dev.plan !== 'starter' && dev.plan_expires_at) {
+    if (new Date(dev.plan_expires_at) < new Date()) return 'starter';
+  }
+  return dev.plan || 'starter';
+}
+
 function getLimit(plan, resource) {
   const limits = LIMITS[plan] || LIMITS.starter;
   return limits[resource]; // -1 = unlimited
@@ -13,8 +21,8 @@ function getLimit(plan, resource) {
 
 // Check if developer can create a new app
 async function checkAppLimit(req, res, next) {
-  const { data: dev } = await supabase.from('developers').select('plan').eq('id', req.developer.id).single();
-  const plan = dev?.plan || 'starter';
+  const { data: dev } = await supabase.from('developers').select('plan, plan_expires_at').eq('id', req.developer.id).single();
+  const plan = getEffectivePlan(dev);
   const limit = getLimit(plan, 'apps');
   if (limit === -1) return next();
   const { count } = await supabase.from('apps').select('id', { count: 'exact' }).eq('developer_id', req.developer.id);
@@ -24,8 +32,8 @@ async function checkAppLimit(req, res, next) {
 
 // Check if developer can create a new license
 async function checkLicenseLimit(req, res, next) {
-  const { data: dev } = await supabase.from('developers').select('plan').eq('id', req.developer.id).single();
-  const plan = dev?.plan || 'starter';
+  const { data: dev } = await supabase.from('developers').select('plan, plan_expires_at').eq('id', req.developer.id).single();
+  const plan = getEffectivePlan(dev);
   const limit = getLimit(plan, 'licenses');
   if (limit === -1) return next();
   const { count } = await supabase.from('licenses').select('id', { count: 'exact' }).eq('app_id', req.params.app_id);
@@ -35,9 +43,8 @@ async function checkLicenseLimit(req, res, next) {
 
 // Check if developer can create a new user
 async function checkUserLimit(req, res, next) {
-  const { data: dev } = await supabase.from('developers')
-    .select('plan').eq('id', req.developer.id).single();
-  const plan = dev?.plan || 'starter';
+  const { data: dev } = await supabase.from('developers').select('plan, plan_expires_at').eq('id', req.developer.id).single();
+  const plan = getEffectivePlan(dev);
   const limit = getLimit(plan, 'users');
   if (limit === -1) return next();
 
@@ -50,4 +57,4 @@ async function checkUserLimit(req, res, next) {
   next();
 }
 
-module.exports = { checkAppLimit, checkLicenseLimit, checkUserLimit };
+module.exports = { checkAppLimit, checkLicenseLimit, checkUserLimit, getEffectivePlan };

@@ -13,10 +13,38 @@ function makeToken(dev) {
   return jwt.sign({ id: dev.id, email: dev.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
 }
 
+// Get effective plan — falls back to starter if subscription expired
+function getEffectivePlan(dev) {
+  if (dev.plan && dev.plan !== 'starter' && dev.plan_expires_at) {
+    if (new Date(dev.plan_expires_at) < new Date()) return 'starter';
+  }
+  return dev.plan || 'starter';
+}
+
+// Record a new developer session
+async function createSession(developer_id, req) {
+  const ip_address = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  const user_agent = req.headers['user-agent'] || 'unknown';
+  await supabase.from('developer_sessions').insert([{
+    developer_id,
+    ip_address,
+    user_agent,
+    is_active: true,
+    last_seen: new Date().toISOString()
+  }]);
+}
+
+// Revoke all active sessions for a developer (used on password change)
+async function revokeAllSessions(developer_id) {
+  await supabase.from('developer_sessions').update({ is_active: false }).eq('developer_id', developer_id);
+}
+
 // Register with email verification
 router.post('/register', async (req, res) => {
   const { email, username, password } = req.body;
   if (!email || !username || !password) return res.status(400).json({ error: 'All fields required' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (username.length < 3 || username.length > 32) return res.status(400).json({ error: 'Username must be 3–32 characters' });
   const password_hash = await bcrypt.hash(password, 10);
   const verify_token = uuidv4();
   const verify_expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
@@ -68,7 +96,17 @@ router.post('/login', async (req, res) => {
     const t = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(data.two_factor_secret) });
     if (t.validate({ token: totp_code, window: 1 }) === null) return res.status(401).json({ error: 'Invalid 2FA code' });
   }
-  res.json({ message: 'Login successful', token: makeToken(data), developer: { id: data.id, email: data.email, username: data.username, plan: data.plan, avatar_url: data.avatar_url, email_verified: data.email_verified } });
+  // Create a session record
+  await createSession(data.id, req);
+  const effectivePlan = getEffectivePlan(data);
+  res.json({
+    message: 'Login successful',
+    token: makeToken(data),
+    developer: {
+      id: data.id, email: data.email, username: data.username,
+      plan: effectivePlan, avatar_url: data.avatar_url, email_verified: data.email_verified
+    }
+  });
 });
 
 // Google OAuth - code flow
@@ -101,7 +139,8 @@ router.post('/google-code', async (req, res) => {
         dev = newDev;
       }
     }
-    res.json({ message: 'Google login successful', token: makeToken(dev), developer: { id: dev.id, email: dev.email, username: dev.username, plan: dev.plan, avatar_url: dev.avatar_url } });
+    await createSession(dev.id, req);
+    res.json({ message: 'Google login successful', token: makeToken(dev), developer: { id: dev.id, email: dev.email, username: dev.username, plan: getEffectivePlan(dev), avatar_url: dev.avatar_url } });
   } catch(e) {
     res.status(401).json({ error: 'Google authentication failed: ' + e.message });
   }
@@ -149,7 +188,8 @@ router.post('/discord-code', async (req, res) => {
         dev = newDev;
       }
     }
-    res.json({ message: 'Discord login successful', token: makeToken(dev), developer: { id: dev.id, email: dev.email, username: dev.username, plan: dev.plan, avatar_url: dev.avatar_url } });
+    await createSession(dev.id, req);
+    res.json({ message: 'Discord login successful', token: makeToken(dev), developer: { id: dev.id, email: dev.email, username: dev.username, plan: getEffectivePlan(dev), avatar_url: dev.avatar_url } });
   } catch(e) {
     res.status(401).json({ error: 'Discord authentication failed: ' + e.message });
   }
@@ -177,9 +217,34 @@ router.post('/2fa/enable', require('../middleware/auth'), async (req, res) => {
   res.json({ message: '2FA enabled' });
 });
 
+// Disable 2FA — requires a valid TOTP code as confirmation
 router.post('/2fa/disable', require('../middleware/auth'), async (req, res) => {
+  const { totp_code } = req.body;
+  if (!totp_code) return res.status(400).json({ error: 'Your current 2FA code is required to disable 2FA' });
+  const { data: dev } = await supabase.from('developers').select('two_factor_secret, two_factor_enabled').eq('id', req.developer.id).single();
+  if (!dev?.two_factor_enabled) return res.status(400).json({ error: '2FA is not enabled' });
+  if (!dev.two_factor_secret) return res.status(400).json({ error: '2FA secret not found' });
+  const OTPAuth = require('otpauth');
+  const t = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(dev.two_factor_secret) });
+  if (t.validate({ token: totp_code, window: 1 }) === null) return res.status(401).json({ error: 'Invalid 2FA code' });
   await supabase.from('developers').update({ two_factor_enabled: false, two_factor_secret: null }).eq('id', req.developer.id);
   res.json({ message: '2FA disabled' });
+});
+
+// Change password — invalidates all sessions
+router.post('/change-password', require('../middleware/auth'), async (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!current_password || !new_password) return res.status(400).json({ error: 'Both passwords required' });
+  if (new_password.length < 8) return res.status(400).json({ error: 'New password must be at least 8 characters' });
+  const { data: dev } = await supabase.from('developers').select('password_hash').eq('id', req.developer.id).single();
+  if (!dev) return res.status(404).json({ error: 'Account not found' });
+  const valid = await bcrypt.compare(current_password, dev.password_hash);
+  if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+  const password_hash = await bcrypt.hash(new_password, 10);
+  await supabase.from('developers').update({ password_hash }).eq('id', req.developer.id);
+  // Invalidate all sessions — the user will need to log in again on all devices
+  await revokeAllSessions(req.developer.id);
+  res.json({ message: 'Password changed. You have been signed out of all other sessions.' });
 });
 
 router.get('/me', require('../middleware/auth'), async (req, res) => {
@@ -187,7 +252,8 @@ router.get('/me', require('../middleware/auth'), async (req, res) => {
     .select('id, email, username, plan, plan_expires_at, two_factor_enabled, avatar_url, created_at, is_admin, email_verified, discord_username')
     .eq('id', req.developer.id).single();
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ developer: data });
+  // Return the effective plan (downgrade to starter if subscription expired)
+  res.json({ developer: { ...data, plan: getEffectivePlan(data) } });
 });
 
 module.exports = router;
