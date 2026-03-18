@@ -159,7 +159,7 @@ router.get('/discord', (req, res) => {
 });
 
 router.post('/discord-code', async (req, res) => {
-  const { code, redirect_uri } = req.body;
+  const { code, redirect_uri, link_only } = req.body;
   if (!code) return res.status(400).json({ error: 'Code required' });
   try {
     const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
@@ -169,27 +169,68 @@ router.post('/discord-code', async (req, res) => {
     });
     const tokens = await tokenRes.json();
     if (!tokens.access_token) return res.status(400).json({ error: 'Failed to get Discord token' });
+    
     const userRes = await fetch('https://discord.com/api/users/@me', { headers: { Authorization: 'Bearer ' + tokens.access_token } });
     const discordUser = await userRes.json();
     const { id: discord_id, username: discord_username, email, avatar } = discordUser;
     const avatar_url = avatar ? 'https://cdn.discordapp.com/avatars/' + discord_id + '/' + avatar + '.png' : null;
+
+    // Optional: Synchronize plan based on roles in a specific guild
+    let syncedPlan = null;
+    if (process.env.DISCORD_GUILD_ID && process.env.DISCORD_BOT_TOKEN) {
+      const guildRes = await fetch(`https://discord.com/api/guilds/${process.env.DISCORD_GUILD_ID}/members/${discord_id}`, {
+         headers: { Authorization: 'Bot ' + process.env.DISCORD_BOT_TOKEN }
+      });
+      if (guildRes.ok) {
+        const member = await guildRes.json();
+        const roles = member.roles || [];
+        // Map role IDs to plans (Example IDs)
+        if (roles.includes(process.env.DISCORD_BUSINESS_ROLE_ID)) syncedPlan = 'business';
+        else if (roles.includes(process.env.DISCORD_PRO_ROLE_ID)) syncedPlan = 'pro';
+      }
+    }
+
+    if (link_only) {
+      // Need auth middleware if this is a separate request, but here we'll assume it's for the current logged in dev via a different path if needed
+      // Actually, dashboard calling /discord-code with link_only: true will need Authorization header
+      const authHeader = req.headers.authorization;
+      if (!authHeader) return res.status(401).json({ error: 'Authorization required to link account' });
+      const currentToken = authHeader.split(' ')[1];
+      const decoded = jwt.verify(currentToken, process.env.JWT_SECRET);
+      
+      const updates = { discord_id, discord_username };
+      if (syncedPlan) updates.plan = syncedPlan;
+      
+      await supabase.from('developers').update(updates).eq('id', decoded.id);
+      return res.json({ message: 'Discord linked!', discord_username });
+    }
+
     let { data: dev } = await supabase.from('developers').select('*').eq('discord_id', discord_id).single();
     if (!dev) {
       let { data: existing } = await supabase.from('developers').select('*').eq('email', email).single();
       if (existing) {
-        await supabase.from('developers').update({ discord_id, discord_username, avatar_url: avatar_url || existing.avatar_url, email_verified: true }).eq('id', existing.id);
-        dev = { ...existing, discord_id, discord_username };
+        const updates = { discord_id, discord_username, avatar_url: avatar_url || existing.avatar_url, email_verified: true };
+        if (syncedPlan) updates.plan = syncedPlan;
+        await supabase.from('developers').update(updates).eq('id', existing.id);
+        dev = { ...existing, ...updates };
       } else {
         const username = discord_username.replace(/\s+/g, '').toLowerCase() + Math.floor(Math.random() * 999);
-        const { data: newDev, error } = await supabase.from('developers')
-          .insert([{ email, username, password_hash: '', discord_id, discord_username, avatar_url, email_verified: true }])
-          .select('*').single();
+        const updates = { email, username, password_hash: '', discord_id, discord_username, avatar_url, email_verified: true };
+        if (syncedPlan) updates.plan = syncedPlan;
+        const { data: newDev, error } = await supabase.from('developers').insert([updates]).select('*').single();
         if (error) return res.status(400).json({ error: error.message });
         dev = newDev;
       }
+    } else {
+      // Login with existing Discord ID, but check for plan updates
+      if (syncedPlan && dev.plan !== syncedPlan) {
+        await supabase.from('developers').update({ plan: syncedPlan }).eq('id', dev.id);
+        dev.plan = syncedPlan;
+      }
     }
+    
     await createSession(dev.id, req);
-    res.json({ message: 'Discord login successful', token: makeToken(dev), developer: { id: dev.id, email: dev.email, username: dev.username, plan: getEffectivePlan(dev), avatar_url: dev.avatar_url } });
+    res.json({ message: 'Discord login successful', token: makeToken(dev), developer: { id: dev.id, email: dev.email, username: dev.username, plan: getEffectivePlan(dev), avatar_url: dev.avatar_url, discord_username: dev.discord_username } });
   } catch(e) {
     res.status(401).json({ error: 'Discord authentication failed: ' + e.message });
   }

@@ -48,6 +48,8 @@ app.use('/api/security',  require('./routes/security'));
 app.use('/api/stripe',    require('./routes/stripe'));
 app.use('/api/portal',    require('./routes/portal'));
 app.use('/api/team',      require('./routes/team'));
+app.use('/api/bots',      require('./routes/bots'));
+app.use('/api/public',    require('./routes/public'));
 
 app.get('/', (req, res) => res.json({ message: 'AuthForge API v5', version: '5.0.0' }));
 
