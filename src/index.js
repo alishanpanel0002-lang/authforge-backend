@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
+const { initAllBots } = require('./botManager');
 
 const app = express();
 
@@ -49,9 +50,13 @@ app.use('/api/stripe',    require('./routes/stripe'));
 app.use('/api/portal',    require('./routes/portal'));
 app.use('/api/team',      require('./routes/team'));
 app.use('/api/bots',      require('./routes/bots'));
+app.use('/api/webhooks',  require('./routes/webhooks'));
 app.use('/api/public',    require('./routes/public'));
 
 app.get('/', (req, res) => res.json({ message: 'AuthForge API v5', version: '5.0.0' }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`AuthForge v5 running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`AuthForge v5 (ShadowAuth) running on port ${PORT}`);
+    initAllBots();
+});

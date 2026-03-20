@@ -2,6 +2,7 @@ const router = require('express').Router();
 const supabase = require('../supabase');
 const auth = require('../middleware/auth');
 const { getEffectivePlan } = require('../middleware/planLimits');
+const { startBot } = require('../botManager');
 
 router.use(auth);
 
@@ -30,6 +31,7 @@ router.post('/', ensureBusiness, async (req, res) => {
         platform, bot_token, custom_api_key, is_active: true
     }]).select().single();
     if (error) return res.status(400).json({ error: error.message });
+    if (data.is_active) startBot(data);
     res.json({ message: 'Bot integration created successfully.', bot: data });
 });
 
@@ -37,6 +39,7 @@ router.patch('/:id/toggle', ensureBusiness, async (req, res) => {
     const { is_active } = req.body;
     const { data, error } = await supabase.from('bots').update({ is_active }).eq('id', req.params.id).eq('developer_id', req.developer.id).select().single();
     if (error) return res.status(400).json({ error: error.message });
+    if (is_active) startBot(data);
     res.json({ message: 'Bot updated', bot: data });
 });
 
