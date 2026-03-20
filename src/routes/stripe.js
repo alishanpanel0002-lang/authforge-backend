@@ -22,8 +22,23 @@ router.post('/checkout', auth, async (req, res) => {
     customer_id = customer.id;
     await supabase.from('developers').update({ stripe_customer_id: customer_id }).eq('id', dev.id);
   }
+
+  const { data: config } = await supabase.from('global_settings').select('*').limit(1).single();
+  let discounts = [];
+  if (config && config.discount_percent > 0) {
+    try {
+      const coupon = await stripe.coupons.create({
+        percent_off: config.discount_percent,
+        duration: 'once',
+        name: `${config.discount_percent}% Global Sale`
+      });
+      discounts.push({ coupon: coupon.id });
+    } catch (e) { console.error('Stripe Coupon Error:', e); }
+  }
+
   const session = await stripe.checkout.sessions.create({
     customer: customer_id,
+    discounts,
     payment_method_types: ['card'],
     line_items: [{ price: PLANS[plan].price_id, quantity: 1 }],
     mode: 'subscription',
