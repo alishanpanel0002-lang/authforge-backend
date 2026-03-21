@@ -3,12 +3,13 @@ const supabase = require('../supabase');
 
 // 1. Get global site config (Theme, announcement, promos)
 router.get('/config', async (req, res) => {
-  const { data, error } = await supabase.from('global_settings').select('*').limit(1).single();
-  if (error || !data) {
-    // Return a default config if the table doesn't exist yet
-    return res.json({ config: { theme: 'dark', homepage_announcement: null, bogo_active: false, discount_percent: 0 } });
+  try {
+    const { data } = await supabase.from('global_settings').select('*').limit(1);
+    const config = (data && data[0]) || { theme: 'dark', homepage_announcement: null, bogo_active: false, discount_percent: 0 };
+    res.json({ config });
+  } catch (e) {
+    res.json({ config: { theme: 'dark', homepage_announcement: null, bogo_active: false, discount_percent: 0 } });
   }
-  res.json({ config: data });
 });
 
 // 2. Get public team details (Admins and Devs for Homepage)
