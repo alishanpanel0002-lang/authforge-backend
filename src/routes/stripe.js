@@ -60,7 +60,15 @@ router.post('/webhook', async (req, res) => {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const { developer_id, plan } = session.metadata;
-    const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    
+    // Check for BOGO (Buy One Get One Free)
+    let days = 30;
+    const { data: config } = await supabase.from('global_settings').select('bogo_active').limit(1).single();
+    if (config?.bogo_active) {
+      days = 60; // 2 months for the price of 1
+    }
+
+    const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
     await supabase.from('developers').update({ plan, plan_expires_at: expires }).eq('id', developer_id);
   }
   if (event.type === 'customer.subscription.deleted') {
