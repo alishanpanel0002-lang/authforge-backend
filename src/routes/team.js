@@ -156,6 +156,27 @@ router.post('/chat', async (req, res) => {
   res.json({ message: 'Sent', data });
 });
 
+router.patch('/chat/:id', async (req, res) => {
+  const { message } = req.body;
+  const { data: msg } = await supabase.from('team_messages').select('*').eq('id', req.params.id).single();
+  if (!msg) return res.status(404).json({ error: 'Message not found' });
+  if (msg.sender_id !== req.developer.id && msg.developer_id !== req.developer.id) return res.status(403).json({ error: 'Unauthorized to edit this message' });
+  
+  const { error } = await supabase.from('team_messages').update({ message }).eq('id', req.params.id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Message updated' });
+});
+
+router.delete('/chat/:id', async (req, res) => {
+  const { data: msg } = await supabase.from('team_messages').select('*').eq('id', req.params.id).single();
+  if (!msg) return res.status(404).json({ error: 'Message not found' });
+  if (msg.sender_id !== req.developer.id && msg.developer_id !== req.developer.id) return res.status(403).json({ error: 'Unauthorized to delete this message' });
+  
+  const { error } = await supabase.from('team_messages').delete().eq('id', req.params.id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Message deleted' });
+});
+
 router.get('/announcements', async (req, res) => {
   const team_id = req.query.team_id || req.developer.id;
   if (team_id !== req.developer.id) {
