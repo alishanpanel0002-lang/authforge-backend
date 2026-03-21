@@ -4,7 +4,7 @@ const supabase = require('../supabase');
 // 1. Get global site config (Theme, announcement, promos)
 router.get('/config', async (req, res) => {
   try {
-    const { data } = await supabase.from('global_settings').select('*').limit(1);
+    const { data } = await supabase.from('global_settings').select('*').order('updated_at', { ascending: false }).limit(1);
     const config = (data && data[0]) || { theme: 'dark', homepage_announcement: null, bogo_active: false, discount_percent: 0 };
     res.json({ config });
   } catch (e) {

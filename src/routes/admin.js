@@ -36,7 +36,8 @@ router.patch('/config', async (req, res) => {
   if (bogo_active !== undefined) updates.bogo_active = bogo_active;
   if (discount_percent !== undefined) updates.discount_percent = discount_percent;
 
-  const { data: existing } = await supabase.from('global_settings').select('id').limit(1).single();
+  const { data: list } = await supabase.from('global_settings').select('id').order('updated_at', { ascending: false }).limit(1);
+  const existing = list && list[0];
   let result;
   if (existing) {
     result = await supabase.from('global_settings').update(updates).eq('id', existing.id).select().single();
