@@ -9,6 +9,7 @@ const app = express();
 // Lock CORS to the dashboard origin only
 const allowedOrigins = [
   'https://authforge-dashboard.vercel.app',
+  'https://nyxauth.vercel.app',
   'http://localhost:3000',
   'http://localhost:5500',
   'http://127.0.0.1:5500'

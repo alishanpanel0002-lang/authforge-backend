@@ -42,8 +42,8 @@ router.post('/checkout', auth, async (req, res) => {
     payment_method_types: ['card'],
     line_items: [{ price: PLANS[plan].price_id, quantity: 1 }],
     mode: 'subscription',
-    success_url: 'https://authforge-dashboard.vercel.app/dashboard/dashboard.html?upgraded=1',
-    cancel_url: 'https://authforge-dashboard.vercel.app/dashboard/dashboard.html',
+    success_url: 'https://nyxauth.vercel.app/dashboard/dashboard.html?upgraded=1',
+    cancel_url: 'https://nyxauth.vercel.app/dashboard/dashboard.html',
     metadata: { developer_id: dev.id, plan }
   });
   res.json({ url: session.url });
@@ -84,7 +84,7 @@ router.post('/portal', auth, async (req, res) => {
   if (!data?.stripe_customer_id) return res.status(400).json({ error: 'No subscription found' });
   const session = await stripe.billingPortal.sessions.create({
     customer: data.stripe_customer_id,
-    return_url: 'https://authforge-dashboard.vercel.app/dashboard/dashboard.html'
+    return_url: 'https://nyxauth.vercel.app/dashboard/dashboard.html'
   });
   res.json({ url: session.url });
 });
